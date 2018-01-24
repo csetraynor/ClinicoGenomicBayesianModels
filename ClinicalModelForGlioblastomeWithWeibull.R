@@ -276,19 +276,7 @@ act_agg %>%
 
 
 ############# ---- Add Covariates ---- #######
-#Select Clinical Variables
-glio_clin_dat <- rownames_to_column(glio_clin_dat, var = "index")
-x <- glio_clin_dat %>%
-  mutate(
-    TMZTherapy = index %in% (starts_with("TMZ", vars = therapy_class)),
-    UnspecifiedTherapy = index %in% (starts_with("Unspecified", vars = therapy_class)),
-    NonstandardTherapy = index %in% (starts_with("Nonstandard", vars = therapy_class)),
-    AlkylatingTherapy = index %in% (starts_with("Alkylating", vars = therapy_class))
-  ) %>%
-  select(TMZTherapy, UnspecifiedTherapy, NonstandardTherapy, AlkylatingTherapy, age, sex)
 
-x <- model.matrix(~., x)
-##### --- Feature relations   ----- #####
 
 #Correlation overview
 stan_file <- system.file('stan', 'weibull_survival_model.stan', package =  'biostan')
@@ -300,9 +288,24 @@ if (interactive())
 biostan::print_stan_file(stan_file, section = 'parameters')
 
 
+##########Select Clinical Variables
 
-#---Update gen stan data function to include covariates
+#Dummy Variables for Treatment
 
+glio_clin_dat <- glio_clin_dat %>%
+    tibble::rownames_to_column(var = "index")  %>%
+  mutate(
+    tmz_therapy = index %in% (dplyr::starts_with("TMZ", vars = therapy_class)),
+    unspecified_therapy = index %in% (dplyr::starts_with("Unspecified", vars = therapy_class)),
+    nonstandard_therapy = index %in% (dplyr::starts_with("Nonstandard", vars = therapy_class)),
+    alkylating_therapy = index %in% (dplyr::starts_with("Alkylating", vars = therapy_class)),
+    comb_tmz_rad_therapy = I(therapy_class == "TMZ Chemoradiation, TMZ Chemo")
+  )
+
+
+#--- Update gen stan data function to include covariates ---#
+
+#--- This function will take a formula object as input --- #
 gen_stan_data <- function(data, formula = as.formula(~1)) {
   if(!inherits(formula, 'formula'))
     formula <- as.formula(formula)
@@ -320,7 +323,7 @@ gen_stan_data <- function(data, formula = as.formula(~1)) {
     model.matrix(formula, data = .)
   
   assertthat::assert_that(ncol(Xcen_bg) == ncol(Xobs_bg))
-  M_bg <- ncol(Xobs_bg)
+  M_bg <- ncol(Xcen_bg)
   
   if (M_bg > 1){
     if("(Intercept)" %in% colnames(Xobs_bg))
@@ -328,5 +331,92 @@ gen_stan_data <- function(data, formula = as.formula(~1)) {
     if("(Intercept)" %in% colnames(Xcen_bg))
       Xcen_bg <- array(Xcen_bg[,-1], dim = c(nrow(censored_data), M_bg - 1))
     assertthat::assert_that(ncol(Xcen_bg) == ncol(Xobs_bg))
+    M_bg <- ncol(Xcen_bg)
   }
+  
+  stan_data <- list(
+    Nobs = nrow(observed_data),
+    Ncen = nrow(censored_data),
+    yobs = observed_data$os_months,
+    ycen = censored_data$os_months,
+    M_bg = M_bg,
+    Xcen_bg = array(Xcen_bg, dim = c(nrow(censored_data), M_bg)),
+    Xobs_bg = array(Xobs_bg, dim = c(nrow(observed_data), M_bg))
+  )
 }
+
+stan_input_data <- gen_stan_data(glio_clin_dat, '~ comb_tmz_rad_therapy + I(sex == "Male") +
+                                            alkylating_therapy + nonstandard_therapy + age') 
+
+#---------- Update inits function ----------#
+biostan::print_stan_file(stan_file, section = 'parameters')
+
+gen_inits2 <- function(M_bg){
+  function()
+    list(
+      alpha_raw = 0.01*rnorm(1),
+      mu = rnorm(1),
+      tau_s_bg_raw = 0.1*abs(rnorm(1)),
+      tau_bg_raw = array(abs(rnorm(M_bg)), dim = c(M_bg)),
+      beta_bg_raw = array(rnorm(M_bg), dim = c(M_bg))
+    )
+}
+
+###------ Run Stan --------##
+nChains <- 4
+
+testfit <- rstan::stan(stan_file,
+                       data = gen_stan_data(clin_data, '~ I(sex == "Male")'),
+                       init = gen_inits,
+                       iter = 4,
+                       chains = 1
+)
+
+fullfit <- rstan::stan(stan_file,
+                       data = gen_stan_data(glio_clin_dat, '~ comb_tmz_rad_therapy + I(sex == "Male") +
+                                            alkylating_therapy + nonstandard_therapy + age'),
+                       init = gen_inits2(M_bg = 1),
+                       iter = 5000, 
+                       control = list(stepsize = 0.01, adapt_delta = 0.99),
+                       cores = min(nChains, parallel::detectCores()),
+                       chains = nChains)
+
+##--Review model convergence--#
+
+#Fit object
+print(fullfit)  #Rhat are close to 1?
+
+#Traceplots
+rstan::traceplot(fullfit, 'lp__')
+rstan::traceplot(fullfit, c('alpha', 'mu'), ncol = 1)
+rstan::traceplot(fullfit, 'beta_bg')
+
+if(interactive())
+  shinystan::launch_shinystan(weibull_null_model)        #Launch shiny stan. There are some divergent transitions but overall the sampling has gone well
+
+##--- Review parameter estimates --#
+
+pp_beta_bg <- rstan::extract(fullfit, 'beta_bg')$beta_bg
+ggplot(data = data.frame(beta_bg = unlist(pp_beta_bg)),
+       aes(x = beta_bg)) + 
+  geom_density()
+
+#How likely is the coefficient be greater than 0
+mean(pp_beta_bg >= 0)
+
+#How well does this model fit the data
+
+#among not comb treated
+pp_predict_surv(pp_alpha = rstan::extract(fullfit, 'alpha')$alpha,
+                pp_mu = rstan::extract(fullfit, 'mu')$mu,
+                n = nrow(glio_clin_dat %>% dplyr::filter(comb_tmz_rad_therapy == 0)),
+                data = glio_clin_dat %>% dplyr::filter(comb_tmz_rad_therapy == 0),
+                plot = TRUE)
+
+#among comb treated
+pp_predict_surv(pp_alpha = rstan::extract(fullfit, 'alpha')$alpha,
+                pp_mu = rstan::extract(fullfit, 'mu')$mu,
+                n = nrow(glio_clin_dat %>% dplyr::filter(comb_tmz_rad_therapy == 1)),
+                data = glio_clin_dat %>% dplyr::filter(comb_tmz_rad_therapy == 1),
+                plot = TRUE)
+
