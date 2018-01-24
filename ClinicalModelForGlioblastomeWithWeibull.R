@@ -1,18 +1,18 @@
-#---- Based on biostan package and the excellent self-explanatory vignette by Dr Jacqueline Buros --- #
+#---- Based on biostan package by Dr Jacqueline Buros --- #
 
 theme_set(theme_bw())
 
 library(purrr)
 library(cgsdr)
-library(dplyr)
-library(ggplot)
+library(tidyverse)
 library(survival)
 library(stan)
 library(assertthat)
+library(corrplot)
 
 ###############################################
 #Data obtantion
-#get data from with MSKCC package 
+#------Obtain data by the cgdsr package from MSKCC CBioPortal ----# 
 require(cgdsr)
 mycgds = CGDS("http://www.cbioportal.org/public-portal/")
 
@@ -144,6 +144,26 @@ if(interactive())
 
 
 ################# Posterior predictive check ###################
+#Simulate time to event data
+#weibull_sim_data function takes two parameters (alpha and mu) as inputs and a desired sample size (n). 
+weibull_sim_data <- function(alpha, mu, n) {
+  
+  data <- data.frame(surv_months = rweibull(n = n, alpha, exp(-(mu)/alpha)),
+                     censor_months = rexp(n = n, rate = 1/100),
+                     stringsAsFactors = F
+  ) %>%
+    dplyr::mutate(os_status = ifelse(surv_months < censor_months,
+                                     'DECEASED', 'LIVING'
+    ),
+    os_months = ifelse(surv_months < censor_months,
+                       surv_months, censor_months
+    )
+    )
+  
+  return(data)
+}
+
+################# Posterior predictive check
 
 pp_predict_surv <- function(pp_alpha, pp_mu, n,
                             level = 0.9,
@@ -253,3 +273,60 @@ act_agg %>%
   ) %>%
   dplyr::group_by(time_set) %>%
   dplyr::summarize(mean(within_interval))
+
+
+############# ---- Add Covariates ---- #######
+#Select Clinical Variables
+glio_clin_dat <- rownames_to_column(glio_clin_dat, var = "index")
+x <- glio_clin_dat %>%
+  mutate(
+    TMZTherapy = index %in% (starts_with("TMZ", vars = therapy_class)),
+    UnspecifiedTherapy = index %in% (starts_with("Unspecified", vars = therapy_class)),
+    NonstandardTherapy = index %in% (starts_with("Nonstandard", vars = therapy_class)),
+    AlkylatingTherapy = index %in% (starts_with("Alkylating", vars = therapy_class))
+  ) %>%
+  select(TMZTherapy, UnspecifiedTherapy, NonstandardTherapy, AlkylatingTherapy, age, sex)
+
+x <- model.matrix(~., x)
+##### --- Feature relations   ----- #####
+
+#Correlation overview
+stan_file <- system.file('stan', 'weibull_survival_model.stan', package =  'biostan')
+
+## open stan file to review contents 
+if (interactive())
+  file.edit(stan_file)
+
+biostan::print_stan_file(stan_file, section = 'parameters')
+
+
+
+#---Update gen stan data function to include covariates
+
+gen_stan_data <- function(data, formula = as.formula(~1)) {
+  if(!inherits(formula, 'formula'))
+    formula <- as.formula(formula)
+  
+  observed_data <- data %>%
+    dplyr::filter(os_status == "DECEASED")
+  
+  censored_data <- data %>%
+    dplyr::filter(os_status != "DECEASED")
+  
+  Xobs_bg <- observed_data %>%
+    model.matrix(formula, data = .)
+  
+  Xcen_bg <- censored_data %>%
+    model.matrix(formula, data = .)
+  
+  assertthat::assert_that(ncol(Xcen_bg) == ncol(Xobs_bg))
+  M_bg <- ncol(Xobs_bg)
+  
+  if (M_bg > 1){
+    if("(Intercept)" %in% colnames(Xobs_bg))
+      Xobs_bg <- array(Xobs_bg[,-1], dim = c(nrow(observed_data), M_bg - 1))
+    if("(Intercept)" %in% colnames(Xcen_bg))
+      Xcen_bg <- array(Xcen_bg[,-1], dim = c(nrow(censored_data), M_bg - 1))
+    assertthat::assert_that(ncol(Xcen_bg) == ncol(Xobs_bg))
+  }
+}
