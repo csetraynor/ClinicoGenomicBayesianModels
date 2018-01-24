@@ -1,11 +1,15 @@
-#----Based on biostan package and the excellent explanation by Dr Jacqueline Buros ---#
+#---- Based on biostan package and the excellent self-explanatory vignette by Dr Jacqueline Buros --- #
+
+theme_set(theme_bw())
 
 library(purrr)
+library(cgsdr)
 library(dplyr)
-library(ggplot2)
+library(ggplot)
 library(survival)
-library(rstan)
-library(scales)
+library(stan)
+library(assertthat)
+
 ###############################################
 #Data obtantion
 #get data from with MSKCC package 
@@ -18,6 +22,7 @@ glioblastome_2013_clinical_data <-  getClinicalData(mycgds, glioblastome_2013_ca
 
 #inspect dataframe
 str(glioblastome_2013_clinical_data, no.list = T, vec.len = 2)
+
 
 ####################################################################
 #Data Cleaning
@@ -39,16 +44,14 @@ glio_clin_dat <- glioblastome_2013_clinical_data %>%
 
 #inspect resulting dataframe
 str(glio_clin_dat)
-
-######################################################################
-#Data Exploration
-#Considering overall survival#
-
 glio_clin_dat %>%
   VIM::aggr(prop = FALSE, combined = TRUE, numbers = TRUE, sortVars = TRUE, sortCombs = TRUE)
 
-#filter unknown or negative survival times (os_monts < 0)
+######################################################################
+#######--------------  Data Exploration  ----------------#################
+#---------   Considering overall survival   ----------------------#
 
+#filter unknown or negative survival times (os_monts < 0)
 glio_clin_dat %>%
   filter(!is.na(os_status) & os_status != '') %>%
   filter(os_months < 0 | is.na(os_months)) %>%
@@ -65,8 +68,8 @@ glio_clin_dat %>%
 glio_clin_dat <- glio_clin_dat %>%
   filter(!is.na(os_status) & os_status != '') %>%
   filter(os_months >= 0 & !is.na(os_months))
-  
-#Check 44 fewer obsrvations than original
+
+#Check 44 fewer observations than original
 assertthat::assert_that(nrow(glio_clin_dat) == nrow(glioblastome_2013_clinical_data) - 44)
 
 
@@ -80,7 +83,6 @@ glio_clin_dat %>%
   geom_density(alpha = 0.5)
 
 #KM curve
-
 mle.surv <- survfit(Surv(os_months, os_deceased) ~ 1,
                     data = glio_clin_dat %>%
                       mutate(os_deceased = (os_status == "DECEASED")))
@@ -88,29 +90,10 @@ ggplot2::autoplot(mle.surv, conf.int = F) +
   ggtitle('KM survival for GGM Cohort')
 
 
+##################################################################
+##########------  Parametric Survival Model  --- #####################
 
-############ Parametric Survival Model #####################
-
-
-observed_data <- glio_clin_dat %>%
-  filter(os_status == "DECEASED")
-
-censored_data <- glio_clin_dat %>%
-  filter(os_status != "DECEASED")
-
-stan_data <- list(
-  Nobs = nrow(observed_data),
-  Ncen = nrow(censored_data),
-  yobs = observed_data$os_months,
-  yceb = censored_data$os_months
-)
-rm(censored_data)
-rm(observed_data)
-
-str(stan_data)
-
-#Wraped in a function
-
+#########----- generate dataset for Null Model ------########
 gen_stan_data <- function(data) {
   observed_data <- data %>%
     dplyr::filter(os_status == 'DECEASED')
@@ -126,8 +109,7 @@ gen_stan_data <- function(data) {
   )
 }
 
-######### Setting intial values
-
+#---- Setting intial values for Weibull Distribution Stan http://mc-stan.org/users/documentation/ --#
 gen_inits <- function() {
   list(
     alpha_raw = 0.01*rnorm(1),
@@ -135,7 +117,7 @@ gen_inits <- function() {
   )
 }
 
-########################## Stan run ###########################
+#---- Run Stan ----#
 
 stanfile <- "ClinicoGenomicBayesianModels/ClinicalGliobastomeParametricWithWeibull.stan"
 #open stan file
@@ -143,11 +125,11 @@ if (interactive())
   file.edit(stanfile)
 
 weibull_null_model <-  stan(stanfile,
-              data = gen_stan_data(glio_clin_dat),
-              chains = 4,
-              iter = 1000,
-              init = gen_inits
-  )
+                            data = gen_stan_data(glio_clin_dat),
+                            chains = 4,
+                            iter = 1000,
+                            init = gen_inits
+)
 
 ####################### Checking convergence ###################
 
@@ -161,91 +143,7 @@ if(interactive())
   shinystan::launch_shinystan(weibull_null_model)        #Launch shiny stan
 
 
-
-######################### Posterior predicitive checks ###################################
-#Simulate time to event data
-#weibull_sim_data function takes two parameters (alpha and mu) as inputs and a desired sample size (n). 
-
-
-weibull_sim_data <- function(alpha, mu, n) {
-  
-  data <- data.frame(surv_months = rweibull(n = n, alpha, exp(-(mu)/alpha)),
-                     censor_months = rexp(n = n, rate = 1/100),
-                     stringsAsFactors = F
-  ) %>%
-    dplyr::mutate(os_status = ifelse(surv_months < censor_months,
-                                     'DECEASED', 'LIVING'
-    ),
-    os_months = ifelse(surv_months < censor_months,
-                       surv_months, censor_months
-    )
-    )
-  
-  return(data)
-}
-#Censoring is "arbitrarily" rexp() , censoring is assumed to be noninformative.
-
-######## Simulating data for each posterior draw #
-test_n <- nrow(glio_clin_dat)
-pp_newdata <- purrr::map2(.x = pp_alpha,
-                          .y = pp_mu,
-                          .f = ~weibull_sim_data(alpha = .x,
-                                                 mu = .y,
-                                                 n = test_n))
-
-###### Plot time to event in the posterior draws compare to actual time in dataset
-ggplot(pp_newdata %>%
-         bind_rows() %>%
-         mutate(type = 'posterior predicted values') %>%
-         bind_rows(glio_clin_dat %>% mutate(type = 'actual data'))
-       , aes(x = os_months, group = os_status, colour = os_status, fill = os_status))+ 
-  geom_density(alpha = 0.5) +
-  facet_wrap(~type, ncol = 1)
-
-#### summarise posterior predictive draws
-
-## cumulative survival rate at each draw from the posterior
-
-pp_survdata <- 
-  pp_newdata %>%
-  map(~ mutate(., os_deceased = os_status == 'DECEASED')) %>%
-  map(~ survfit(Surv(os_months, os_deceased) ~ 1, data = .)) %>%
-  map(fortify)
-  
-## summarise cum survival for each unit time (month), summarised at 95% confidence interval
-pp_survdata_agg <- 
-  pp_survdata %>%
-  map(~mutate(., time_group = floor(time))) %>%
-  bind_rows() %>%
-  group_by(time_group) %>%
-  summarize(surv_mean = mean(surv),
-            surv_p50 = median(surv),
-            surv_lower = quantile(surv, probs = 0.025),
-            surv_upper = quantile(surv, probs = 0.975)) %>%
-  ungroup()
-
-## km
-kmcurve_data <-   fortify(
-    survfit(
-      Surv(os_months, os_deceased) ~ 1,
-      data = glio_clin_dat %>%
-        mutate(os_deceased = os_status == 'DECEASED')
-    )) %>%
-  mutate(lower =  surv,
-         upper = surv)
-
-ggplot(pp_survdata_agg %>%
-         mutate(type = 'posterior predicted values') %>%
-         rename(surv = surv_p50, lower = surv_lower, upper = surv_upper, time = time_group)
-       %>%
-         bind_rows(kmcurve_data %>% mutate(type = 'actual data')),
-       aes(x = time, group = type, linetype = type)) +
-  geom_line(aes(y = surv, colour = type)) + 
-  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
-  xlim(c(0, 200))
-
-
-############# Save as a function  ######################
+################# Posterior predictive check ###################
 
 pp_predict_surv <- function(pp_alpha, pp_mu, n,
                             level = 0.9,
@@ -295,18 +193,18 @@ pp_predict_surv <- function(pp_alpha, pp_mu, n,
   
   if (!is.null(data)){
     ggplot_data <- 
-    ggplot_data %>% 
-    bind_rows(
-      fortify(
-        survival::survfit(
-          Surv(os_months, os_deceased) ~ 1, 
-          data = data %>% 
-            dplyr::mutate(
-              os_deceased = os_status == 'DECEASED')
-        )) %>%
-        dplyr::mutate(lower = surv,
-                      upper = surv, type = 'actual data')
-    )}
+      ggplot_data %>% 
+      bind_rows(
+        fortify(
+          survival::survfit(
+            Surv(os_months, os_deceased) ~ 1, 
+            data = data %>% 
+              dplyr::mutate(
+                os_deceased = os_status == 'DECEASED')
+          )) %>%
+          dplyr::mutate(lower = surv,
+                        upper = surv, type = 'actual data')
+      )}
   
   pl <- ggplot(ggplot_data,
                aes(x = time, group = type, linetype = type)) + 
@@ -316,8 +214,6 @@ pp_predict_surv <- function(pp_alpha, pp_mu, n,
   pl 
 }
 
-
-################# Posterior predictive check ###################
 pl <- pp_predict_surv(pp_alpha = extract(weibull_null_model,'alpha')$alpha,
                       pp_mu = extract(weibull_null_model,'mu')$mu,
                       n = nrow(glio_clin_dat),
@@ -357,4 +253,3 @@ act_agg %>%
   ) %>%
   dplyr::group_by(time_set) %>%
   dplyr::summarize(mean(within_interval))
-####### Parame
