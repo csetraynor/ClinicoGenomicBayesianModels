@@ -5,6 +5,7 @@ nclust <- 1 # number of clusters
 clusters <- rep(1:nclust,each=n/nclust)
 beta0 <- c(1,2)
 set.seed(13)
+#--- From phmm package---- #
 #generate phmm data set
 Z <- cbind(Z1=sample(0:1,n,replace=TRUE),
            Z2=sample(0:1,n,replace=TRUE),
