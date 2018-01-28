@@ -1,6 +1,6 @@
 
 #create sample id
-#clinical_data <- rownames_to_column(clinical_data, var = "s") #sample id in numeric
+clinical_data <- rownames_to_column(clinical_data, var = "s") #sample id in numeric
 #obtain unique times
 times <- sort(unique(clinical_data$os_months))
 
@@ -69,24 +69,21 @@ gen_stan_data <- function(data) {
     N = nrow(longdata),
     S = dplyr::n_distinct(longdata$sample),
     "T" = length(times),
-    s = array(as.numeric(longdata$s)),
-    t = array(longdata$t),
-    event = array(longdata$deceased),
-    t_obs = array(longdata$os_months),
-    t_dur = array(longdata$t_dur)
+    s = as.numeric(longdata$s),
+    t = longdata$t,
+    event = longdata$deceased,
+    t_obs = longdata$os_months,
+    t_dur = longdata$t_dur
   )
 }
-
-#---- Run Stan ----#
 
 stanfile <- "null_pem_survival_model.stan"
 #open stan file
 if (interactive())
   file.edit(stanfile)
 
-null_model <-  stan(stanfile,
+pem_null_model <-  stan(stanfile,
                             data = gen_stan_data(clinical_data),
                             chains = 1,
                             iter = 5
 )
-
