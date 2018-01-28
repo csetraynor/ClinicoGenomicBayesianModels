@@ -1,6 +1,6 @@
 
 #create sample id
-clinical_data <- rownames_to_column(clinical_data, var = "s") #sample id in numeric
+#clinical_data <- rownames_to_column(clinical_data, var = "s") #sample id in numeric
 #obtain unique times
 times <- sort(unique(clinical_data$os_months))
 
@@ -69,11 +69,11 @@ gen_stan_data <- function(data) {
     N = nrow(longdata),
     S = dplyr::n_distinct(longdata$sample),
     "T" = length(times),
-    s = as.numeric(longdata$s),
-    t = longdata$t,
-    event = longdata$deceased,
-    t_obs = longdata$os_months,
-    t_dur = longdata$t_dur
+    s = array(as.numeric(longdata$s)),
+    t = array(longdata$t),
+    event = array(longdata$deceased),
+    t_obs = array(longdata$os_months),
+    t_dur = array(longdata$t_dur)
   )
 }
 
