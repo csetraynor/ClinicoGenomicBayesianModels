@@ -1,34 +1,37 @@
 #---- Based on biostan package by Dr Jacqueline Buros --- #
-
-theme_set(theme_bw())
-
 library(purrr)
-library(cgsdr)
-library(tidyverse)
+suppressMessages(library(tidyverse))
 library(survival)
-library(stan)
+library(rstan)
 library(assertthat)
 library(corrplot)
+library(cgdsr)
 
+library(ggplot2)
+theme_set(theme_bw())
 ###############################################
 #Data obtantion
 #------Obtain data by the cgdsr package from MSKCC CBioPortal ----# 
-require(cgdsr)
+
 mycgds = CGDS("http://www.cbioportal.org/public-portal/")
 
-glioblastome_2013_id_sutdy = getCancerStudies(mycgds)[55,1]
-glioblastome_2013_case_list = getCaseLists(mycgds, glioblastome_2013_id_sutdy)[2,1]
-glioblastome_2013_clinical_data <-  getClinicalData(mycgds, glioblastome_2013_case_list)
+study_list = getCancerStudies(mycgds)
+
+id_sutdy = getCancerStudies(mycgds)[23,1]
+case_list = getCaseLists(mycgds, id_sutdy)[2,1]
+clinical_data <-  getClinicalData(mycgds, case_list)
 
 #inspect dataframe
-str(glioblastome_2013_clinical_data, no.list = T, vec.len = 2)
+glimpse(clinical_data)
 
 
 ####################################################################
 #Data Cleaning
 
+clinical_data <- clinical_data %>% tibble::rownames_to_column("sample") 
+
 #convert to lower case
-names(glioblastome_2013_clinical_data) <- tolower(names(glioblastome_2013_clinical_data)) 
+names(clinical_data) <- tolower(names(clinical_data)) 
 
 #convert missig values
 convert_blank_to_na <- function(x) {
@@ -39,12 +42,12 @@ convert_blank_to_na <- function(x) {
     ifelse(x == '', NA, x)
   }
 }
-glio_clin_dat <- glioblastome_2013_clinical_data %>%
+clinical_data <- clinical_data %>%
   dplyr::mutate_all(funs(convert_blank_to_na))
 
 #inspect resulting dataframe
-str(glio_clin_dat)
-glio_clin_dat %>%
+glimpse(clinical_data)
+clinical_data %>%
   VIM::aggr(prop = FALSE, combined = TRUE, numbers = TRUE, sortVars = TRUE, sortCombs = TRUE)
 
 ######################################################################
@@ -52,30 +55,29 @@ glio_clin_dat %>%
 #---------   Considering overall survival   ----------------------#
 
 #filter unknown or negative survival times (os_monts < 0)
-glio_clin_dat %>%
+clinical_data %>%
   filter(!is.na(os_status) & os_status != '') %>%
   filter(os_months < 0 | is.na(os_months)) %>%
   select(os_status, os_months) %>%
   head()
 
-glio_clin_dat %>%
+clinical_data %>%
   filter(is.na(os_status) | os_status == '') %>%
   select(os_status, os_months) %>%
   str() 
 
 #for now this observation will be remove from the analysis
 
-glio_clin_dat <- glio_clin_dat %>%
+clinical_data <- clinical_data %>%
   filter(!is.na(os_status) & os_status != '') %>%
   filter(os_months >= 0 & !is.na(os_months))
 
 #Check 44 fewer observations than original
-assertthat::assert_that(nrow(glio_clin_dat) == nrow(glioblastome_2013_clinical_data) - 44)
-
+assertthat::assert_that(nrow(clinical_data) == nrow(glioblastome_2013_clinical_data) - 44)
 
 ########## Distribution of event times  ######################
 
-glio_clin_dat %>%
+clinical_data %>%
   ggplot(aes(x = os_months,
              group = os_status,
              colour = os_status,
@@ -84,11 +86,29 @@ glio_clin_dat %>%
 
 #KM curve
 mle.surv <- survfit(Surv(os_months, os_deceased) ~ 1,
-                    data = glio_clin_dat %>%
+                    data = clinical_data %>%
                       mutate(os_deceased = (os_status == "DECEASED")))
 ggplot2::autoplot(mle.surv, conf.int = F) +
   ggtitle('KM survival for GGM Cohort')
 
+##############################################################
+#######------ Considering disease free survival ------ #######
+
+#filter unknown or negative survival times (os_monts < 0)
+clinical_data %>%
+  filter(is.na(dfs_status) | dfs_status == '') %>%
+  filter(dfs_months <= 0 | is.na(dfs_months)) %>%
+  select(dfs_status, dfs_months) %>%
+  str()
+
+#for now this observation will be remove from the analysis
+
+clinical_data <- clinical_data %>%
+  filter(!is.na(dfs_status) | dfs_status != '') %>%
+  filter(dfs_months > 0  | !is.na(dfs_months)) 
+
+#Check 43 fewer observations than original
+assertthat::assert_that(nrow(clinical_data) == nrow(glioblastome_2013_clinical_data) - 43)
 
 ##################################################################
 ##########------  Parametric Survival Model  --- #####################
@@ -125,7 +145,7 @@ if (interactive())
   file.edit(stanfile)
 
 weibull_null_model <-  stan(stanfile,
-                            data = gen_stan_data(glio_clin_dat),
+                            data = gen_stan_data(clinical_data),
                             chains = 4,
                             iter = 1000,
                             init = gen_inits
@@ -236,8 +256,8 @@ pp_predict_surv <- function(pp_alpha, pp_mu, n,
 
 pl <- pp_predict_surv(pp_alpha = extract(weibull_null_model,'alpha')$alpha,
                       pp_mu = extract(weibull_null_model,'mu')$mu,
-                      n = nrow(glio_clin_dat),
-                      data = glio_clin_dat,
+                      n = nrow(clinical_data),
+                      data = clinical_data,
                       plot = T
 ) 
 pl + 
@@ -249,14 +269,14 @@ pl +
 ## summarize 90% CI of predicted event rate for each interval
 pp_agg <- pp_predict_surv(pp_alpha = extract(weibull_null_model,'alpha')$alpha,
                           pp_mu = extract(weibull_null_model,'mu')$mu,
-                          n = nrow(glio_clin_dat)
+                          n = nrow(clinical_data)
 )
 
 
 ## summarize observed data into same time_groups
 act_agg <- 
   survival::survfit(Surv(os_months, I(os_status == 'DECEASED')) ~ 1,
-                    data = glio_clin_dat
+                    data = clinical_data
   ) %>%
   fortify() %>%
   dplyr::mutate(time_group = floor(time)) %>%
@@ -292,7 +312,7 @@ biostan::print_stan_file(stan_file, section = 'parameters')
 
 #Dummy Variables for Treatment
 
-glio_clin_dat <- glio_clin_dat %>%
+clinical_data <- clinical_data %>%
     tibble::rownames_to_column(var = "index")  %>%
   mutate(
     tmz_therapy = index %in% (dplyr::starts_with("TMZ", vars = therapy_class)),
@@ -345,7 +365,7 @@ gen_stan_data <- function(data, formula = as.formula(~1)) {
   )
 }
 
-stan_input_data <- gen_stan_data(glio_clin_dat, '~ comb_tmz_rad_therapy + I(sex == "Male") +
+stan_input_data <- gen_stan_data(clinical_data, '~ comb_tmz_rad_therapy + I(sex == "Male") +
                                             alkylating_therapy + nonstandard_therapy + age') 
 
 #---------- Update inits function ----------#
@@ -373,7 +393,7 @@ testfit <- rstan::stan(stan_file,
 )
 
 fullfit <- rstan::stan(stan_file,
-                       data = gen_stan_data(glio_clin_dat, '~ comb_tmz_rad_therapy + I(sex == "Male") +
+                       data = gen_stan_data(clinical_data, '~ comb_tmz_rad_therapy + I(sex == "Male") +
                                             alkylating_therapy + nonstandard_therapy + age'),
                        init = gen_inits2(M_bg = 1),
                        iter = 5000, 
@@ -409,14 +429,14 @@ mean(pp_beta_bg >= 0)
 #among not comb treated
 pp_predict_surv(pp_alpha = rstan::extract(fullfit, 'alpha')$alpha,
                 pp_mu = rstan::extract(fullfit, 'mu')$mu,
-                n = nrow(glio_clin_dat %>% dplyr::filter(comb_tmz_rad_therapy == 0)),
-                data = glio_clin_dat %>% dplyr::filter(comb_tmz_rad_therapy == 0),
+                n = nrow(clinical_data %>% dplyr::filter(comb_tmz_rad_therapy == 0)),
+                data = clinical_data %>% dplyr::filter(comb_tmz_rad_therapy == 0),
                 plot = TRUE)
 
 #among comb treated
 pp_predict_surv(pp_alpha = rstan::extract(fullfit, 'alpha')$alpha,
                 pp_mu = rstan::extract(fullfit, 'mu')$mu,
-                n = nrow(glio_clin_dat %>% dplyr::filter(comb_tmz_rad_therapy == 1)),
-                data = glio_clin_dat %>% dplyr::filter(comb_tmz_rad_therapy == 1),
+                n = nrow(clinical_data %>% dplyr::filter(comb_tmz_rad_therapy == 1)),
+                data = clinical_data %>% dplyr::filter(comb_tmz_rad_therapy == 1),
                 plot = TRUE)
 
