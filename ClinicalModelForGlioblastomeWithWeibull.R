@@ -19,7 +19,7 @@ study_list = getCancerStudies(mycgds)
 
 id_sutdy = getCancerStudies(mycgds)[23,1]
 case_list = getCaseLists(mycgds, id_sutdy)[2,1]
-clinical_data <-  getClinicalData(mycgds, case_list)
+clinical_data <-  tbl_df(getClinicalData(mycgds, case_list)) 
 
 #inspect dataframe
 glimpse(clinical_data)
