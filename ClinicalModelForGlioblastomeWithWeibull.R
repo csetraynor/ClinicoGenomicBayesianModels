@@ -17,7 +17,7 @@ mycgds = CGDS("http://www.cbioportal.org/public-portal/")
 
 study_list = getCancerStudies(mycgds)
 
-id_sutdy = getCancerStudies(mycgds)[23,1]
+id_sutdy = getCancerStudies(mycgds)[55,1]
 case_list = getCaseLists(mycgds, id_sutdy)[2,1]
 clinical_data <-  tbl_df(getClinicalData(mycgds, case_list)) 
 
@@ -29,7 +29,6 @@ glimpse(clinical_data)
 #Data Cleaning
 
 clinical_data <- clinical_data %>% tibble::rownames_to_column("sample") 
-
 #convert to lower case
 names(clinical_data) <- tolower(names(clinical_data)) 
 
@@ -56,10 +55,11 @@ clinical_data %>%
 
 #filter unknown or negative survival times (os_monts < 0)
 clinical_data %>%
-  filter(!is.na(os_status) & os_status != '') %>%
-  filter(os_months < 0 | is.na(os_months)) %>%
+  filter(is.na(os_status) | os_status == '') %>%
+  filter(os_months <= 0 | is.na(os_months)) %>%
   select(os_status, os_months) %>%
-  head()
+  dplyr::glimpse()
+  
 
 clinical_data %>%
   filter(is.na(os_status) | os_status == '') %>%
@@ -98,8 +98,7 @@ ggplot2::autoplot(mle.surv, conf.int = F) +
 clinical_data %>%
   filter(is.na(dfs_status) | dfs_status == '') %>%
   filter(dfs_months <= 0 | is.na(dfs_months)) %>%
-  select(dfs_status, dfs_months) %>%
-  str()
+  dplyr::glimpse()
 
 #for now this observation will be remove from the analysis
 
@@ -108,7 +107,7 @@ clinical_data <- clinical_data %>%
   filter(dfs_months > 0  | !is.na(dfs_months)) 
 
 #Check 43 fewer observations than original
-assertthat::assert_that(nrow(clinical_data) == nrow(glioblastome_2013_clinical_data) - 43)
+assertthat::assert_that(nrow(clinical_data) == nrow(glioblastome_2013_clinical_data) - 78)
 
 ##################################################################
 ##########------  Parametric Survival Model  --- #####################

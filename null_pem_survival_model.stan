@@ -1,0 +1,58 @@
+/*  Variable naming:
+ // dimensions
+ N          = total number of observations (length of data)
+ S          = number of sample ids
+ T          = max timepoint (number of timepoint ids)
+
+ // data
+ s          = sample id for each obs
+ t          = timepoint id for each obs
+ event      = integer indicating if there was an event at time t for sample s
+ t_obs      = observed end time for interval for timepoint for that obs
+ t_dur      = interval duration for each time point 
+
+*/
+// Jacqueline Buros Novik <jackinovik@gmail.com>
+
+data {
+  int<lower=1> N;
+  int<lower=1> S;
+  int<lower=1> T;
+  int<lower=1, upper=N> s[N];     // sample id
+  int<lower=1, upper=T> t[N];     // timepoint id
+  int<lower=0, upper=1> event[N]; // 1: event, 0:censor
+  real<lower=0> t_obs[N];         // observed end time for each timepoint
+  real<lower=0> t_dur[N];         // duration for each timepoint
+}
+transformed data {
+  real c;
+  real r;
+
+  // baseline hazard params (fixed)
+  c = 0.001;
+  r = 0.1;
+}
+parameters {
+  vector<lower=0>[T] baseline; // unstructured baseline hazard for each timepoint t
+}
+transformed parameters {
+  vector<lower=0>[N] hazard;
+  
+  for (n in 1:N) {
+    hazard[n] = baseline[t[n]];
+  }
+}
+model {
+  for (i in 1:T) {
+      baseline[i] ~ gamma(r * t_dur[i] * c, c);
+  }
+  
+  event ~ poisson(hazard);
+}
+generated quantities {
+  real log_lik[N];
+
+  for (i in 1:N) {
+      log_lik[i] = poisson_lcdf(event[i] | hazard[i]);
+  }
+}
