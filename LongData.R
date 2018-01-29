@@ -46,10 +46,13 @@ longdata <- longdata %>%
 #Wrap in a function
 #generate data
 
-gen_stan_data <- function(data) {
-  #create long data
+gen_stan_data <- function(data, formula = as.formula(~1)) {
+  if(!inherits(formula, 'formula'))
+  formula <- as.formula(formula)
+
   data <- tibble::rownames_to_column(data, var = "s")
   times <- sort(unique(data$os_months))
+  
   longdata <- survival::survSplit(Surv(time = os_months, event = deceased) ~ . , 
                                   cut = times, data = (data %>%
                                                          filter(!is.na(os_status) & os_status != '') %>%
@@ -76,6 +79,52 @@ gen_stan_data <- function(data) {
     t_dur = array(longdata$t_dur)
   )
 }
+
+
+#--- This function will take a formula object as input --- #
+gen_stan_data <- function(data, formula = as.formula(~1)) {
+  if(!inherits(formula, 'formula'))
+    formula <- as.formula(formula)
+  
+  observed_data <- data %>%
+    dplyr::filter(os_status == "DECEASED")
+  
+  censored_data <- data %>%
+    dplyr::filter(os_status != "DECEASED")
+  
+  Xobs_bg <- observed_data %>%
+    model.matrix(formula, data = .)
+  
+  Xcen_bg <- censored_data %>%
+    model.matrix(formula, data = .)
+  
+  assertthat::assert_that(ncol(Xcen_bg) == ncol(Xobs_bg))
+  M_bg <- ncol(Xcen_bg)
+  
+  if (M_bg > 1){
+    if("(Intercept)" %in% colnames(Xobs_bg))
+      Xobs_bg <- array(Xobs_bg[,-1], dim = c(nrow(observed_data), M_bg - 1))
+    if("(Intercept)" %in% colnames(Xcen_bg))
+      Xcen_bg <- array(Xcen_bg[,-1], dim = c(nrow(censored_data), M_bg - 1))
+    assertthat::assert_that(ncol(Xcen_bg) == ncol(Xobs_bg))
+    M_bg <- ncol(Xcen_bg)
+  }
+  
+  stan_data <- list(
+    Nobs = nrow(observed_data),
+    Ncen = nrow(censored_data),
+    yobs = observed_data$os_months,
+    ycen = censored_data$os_months,
+    M_bg = M_bg,
+    Xcen_bg = array(Xcen_bg, dim = c(nrow(censored_data), M_bg)),
+    Xobs_bg = array(Xobs_bg, dim = c(nrow(observed_data), M_bg))
+  )
+}
+
+
+
+
+
 
 stanfile <- "null_pem_survival_model.stan"
 #open stan file

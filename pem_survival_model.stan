@@ -24,30 +24,16 @@ data {
   int<lower=1, upper=T> t[N];     // timepoint id
   int<lower=0, upper=1> event[N]; // 1: event, 0:censor
   matrix[N, M] x;                 // explanatory vars
-  real<lower=0> obs_t[N];         // observed end time for each obs
+  real<lower=0> t_obs[N];         // observed end time for each obs
+  real<lower=0> t_dur[N];         // duration for each timepoint
 }
 transformed data {
-  real t_dur[T];  // duration for each timepoint
-  real t_obs[T];  // observed end time for each timepoint
   real c;
   real r;
 
   // baseline hazard params (fixed)
   c = 0.001;
   r = 0.1;
-
-  // capture observation time for each timepoint id t
-  for (i in 1:N) {
-      // assume these are constant per id across samples
-      t_obs[t[i]] = obs_t[i];
-  }
-
-  // duration of each timepoint
-  // duration at first timepoint = t_obs[1] ( implicit t0 = 0 )
-  t_dur[1] = t_obs[1];
-  for (i in 2:T) {
-      t_dur[i] = t_obs[i] - t_obs[i-1];
-  }
 }
 parameters {
   vector<lower=0>[T] baseline; // unstructured baseline hazard for each timepoint t
