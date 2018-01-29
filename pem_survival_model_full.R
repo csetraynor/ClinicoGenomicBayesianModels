@@ -114,6 +114,9 @@ centered <- function(x){
   return(x_centered)
 }
 
+clinical_data <- clinical_data %>%
+  dplyr::mutate( age_centered = centered(age)) 
+
 #Impute or delete missing Covariate values
 
 
@@ -133,12 +136,14 @@ gen_stan_data <- function(data, formula = as.formula(~1)) {
     mutate(s = seq(n()))
   
   #obtain vector of unique event times
-  times <- data %>% 
-    filter(os_status == "DECEASED") %>% select(os_months) %>% unique %>% ungroup %>% arrange(os_months) %>% unlist
+  t_obs <- data %>% 
+    select(os_months) %>% unique %>% ungroup %>% arrange(os_months) %>% unlist
+  
+  t_dur <- diff(c(0,t_obs))
   
   #create long data
   longdata <- survival::survSplit(Surv(time = os_months, event = deceased) ~ . , 
-                                  cut = times, data = (data %>%
+                                  cut = t_obs, data = (data %>%
                                                          filter(!is.na(os_status) & os_status != '') %>%
                                                          filter(os_months > 0 & !is.na(os_months))  %>%
                                                          mutate(deceased = os_status == "DECEASED")))
@@ -146,11 +151,6 @@ gen_stan_data <- function(data, formula = as.formula(~1)) {
   longdata <- longdata %>%
     group_by(sample) %>%
     mutate(t = seq(n())) 
-  
-  #calculate duration
-  longdata <- longdata %>%
-    group_by(sample) %>%
-    mutate(t_dur = os_months - tstart) 
   
   #covariate matrix
   x <- longdata %>%
@@ -166,19 +166,19 @@ gen_stan_data <- function(data, formula = as.formula(~1)) {
   stan_data <- list(
     N = nrow(longdata),
     S = dplyr::n_distinct(longdata$sample),
-    "T" = length(times),
+    "T" = length(t_obs),
     M = M, 
     s = array(as.numeric(longdata$s)),
     t = array(longdata$t),
     event = array(longdata$deceased),
-    t_obs = array(longdata$os_months),
-    t_dur = array(longdata$t_dur),
+    t_obs = array(t_obs),
+    t_dur = array(t_dur),
     x = array(x, dim = c(nrow(longdata), M))
   )
 }
 
 #---------- inits function ----------#
-stanfile <- "pem_survival_model.stan"
+stanfile <- "pem.stan"
 biostan::print_stan_file(stanfile, section = 'parameters')
 
 gen_inits <- function(M){
@@ -198,7 +198,7 @@ if (interactive())
   file.edit(stanfile)
 
 stan(stanfile,
-     data = gen_stan_data(clinical_data, '~ age'),
+     data = gen_stan_data(clinical_data, '~ age_centered'),
      iter = 5,
      init = gen_inits(M = 1),
      cores = min(1, parallel::detectCores()),
