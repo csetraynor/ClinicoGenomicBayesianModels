@@ -101,6 +101,23 @@ ggplot2::autoplot(mle.surv, conf.int = F) +
   ggtitle('KM survival for GGM 2008 Cohort')
 
 
+#------------ Prepare for fitting model--------------------------#
+
+#Center continuos covariates
+
+ggplot(clinical_data, aes(x = age))+
+  geom_density()+
+  geom_vline(xintercept = median(clinical_data$age))
+
+centered <- function(x){
+  x_centered <- x - mean (x)
+  return(x_centered)
+}
+
+#Impute or delete missing Covariate values
+
+
+
 
 #generate data we need A long data formating
 
@@ -200,11 +217,117 @@ fit_pem_age <-  stan(stanfile,
 ##--Review model convergence--#
 
 #Fit object
-print(pem_null_model)  #Rhat are close to 1?
+print(fit_pem_age)  #Rhat are close to 1?
 
 #Traceplots
-rstan::traceplot(pem_null_model, 'lp__')
-rstan::traceplot(pem_null_model, 'baseline')
+rstan::traceplot(fit_pem_age, 'lp__')
+rstan::traceplot(fit_pem_age, 'beta')
 
 if(interactive())
-  shinystan::launch_shinystan(pem_null_model)        #Launch shiny stan. There are some divergent 
+  shinystan::launch_shinystan(fit_pem_age)        #Launch shiny stan. There are some divergent 
+
+##--- Review parameter estimates --#
+
+pp_beta <- rstan::extract(fit_pem_age, 'beta')$beta
+ggplot(data = data.frame(beta = unlist(pp_beta)),
+       aes(x = beta))+
+  geom_density()
+
+
+#How likely is the coefficient be greater than 0
+mean(pp_beta >= 0)
+
+
+
+
+#------------------ Posterior predictive check ---------------------#
+#Simulate time to event data
+#weibull_sim_data function takes two parameters (alpha and mu) as inputs and a desired sample size (n). 
+pem_sim_data <- function(alpha, mu, n) {
+  
+  data <- data.frame(surv_months = rweibull(n = n, alpha, exp(-(mu)/alpha)),
+                     censor_months = rexp(n = n, rate = 1/100),
+                     stringsAsFactors = F
+  ) %>%
+    dplyr::mutate(os_status = ifelse(surv_months < censor_months,
+                                     'DECEASED', 'LIVING'
+    ),
+    os_months = ifelse(surv_months < censor_months,
+                       surv_months, censor_months
+    )
+    )
+  
+  return(data)
+}
+
+##pp function
+
+pp_predict_surv <- function(pp_alpha, pp_mu, n,
+                            level = 0.9,
+                            plot = F, data = NULL,
+                            sim_data_fun = weibull_sim_data
+) {
+  pp_newdata <- 
+    purrr::map2(.x = pp_alpha,
+                .y = pp_mu,
+                .f = ~ sim_data_fun(alpha = .x, mu = .y, n = n)
+    )
+  
+  pp_survdata <-
+    pp_newdata %>%
+    purrr::map(~ dplyr::mutate(., os_deceased = os_status == 'DECEASED')) %>%
+    purrr::map(~ survival::survfit(Surv(os_months, os_deceased) ~ 1, data = .)) %>%
+    purrr::map(fortify)
+  
+  ## compute quantiles given level 
+  lower_p <- 0 + ((1 - level)/2)
+  upper_p <- 1 - ((1 - level)/2)
+  
+  pp_survdata_agg <- 
+    pp_survdata %>%
+    purrr::map(~ dplyr::mutate(.,
+                               time_group = floor(time))) %>%
+    dplyr::bind_rows() %>%
+    dplyr::group_by(time_group) %>%
+    dplyr::summarize(surv_mean = mean(surv)
+                     , surv_p50 = median(surv)
+                     , surv_lower = quantile(surv,
+                                             probs = lower_p)
+                     , surv_upper = quantile(surv,
+                                             probs = upper_p)
+    ) %>%
+    dplyr::ungroup()
+  
+  if (plot == FALSE) {
+    return(pp_survdata_agg)
+  } 
+  
+  ggplot_data <- pp_survdata_agg %>%
+    dplyr::mutate(type = 'posterior predicted values') %>%
+    dplyr::rename(surv = surv_p50,
+                  lower = surv_lower,
+                  upper = surv_upper, time = time_group)
+  
+  if (!is.null(data)){
+    ggplot_data <- 
+      ggplot_data %>% 
+      bind_rows(
+        fortify(
+          survival::survfit(
+            Surv(os_months, os_deceased) ~ 1, 
+            data = data %>% 
+              dplyr::mutate(
+                os_deceased = os_status == 'DECEASED')
+          )) %>%
+          dplyr::mutate(lower = surv,
+                        upper = surv, type = 'actual data')
+      )}
+  
+  pl <- ggplot(ggplot_data,
+               aes(x = time, group = type, linetype = type)) + 
+    geom_line(aes(y = surv, colour = type)) +
+    geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2)
+  
+  pl 
+}
+
