@@ -30,15 +30,16 @@ glimpse(clinical_data)
 #separate two cohorts
 # id_2008_sutdy = getCancerStudies(mycgds)[56,1] #cohort 2008
 # case_list_2008 = getCaseLists(mycgds, id_2008_sutdy)[2,1]
-# clinical_data_2008 <-  tbl_df(getClinicalData(mycgds, case_list_2008)) 
-# clinical_data_2008 <- clinical_data_2008 %>% tibble::rownames_to_column("sample") 
-# 
-# clinical_data_2008 <- clinical_data %>% 
+# clinical_data_2008 <-  tbl_df(getClinicalData(mycgds, case_list_2008))
+# clinical_data_2008 <- clinical_data_2008 %>% tibble::rownames_to_column("sample")
+# clinical_data_2008 <- clinical_data %>%
 #   filter(sample %in% clinical_data_2008$sample)
+# clinical_data_2013 <- clinical_data %>%
+#   filter(!
+#       (sample %in% clinical_data_2008$sample))
 
 ####################################################################
 #Data Cleaning
-
 
 #convert to lower case
 names(clinical_data) <- tolower(names(clinical_data)) 
@@ -100,9 +101,35 @@ require(ggfortify)
 ggplot2::autoplot(mle.surv, conf.int = F) +
   ggtitle('KM survival for GGM 2008 Cohort')
 
+clinical_data %>%
+  filter(!is.na( idh1_status)) %>%
+  ggplot(aes(x = os_months, group = os_status, colour = os_status, fill = os_status))+
+  geom_density(alpha=0.5)
+
+
+#Impute variables Clinical Variables of Importance are idh1_status, mgmt_status, g.cimp_methylation and age
+glimpse(clinical_data)
+clinical_data %>%
+  VIM::aggr(prop = FALSE, combined = TRUE, numbers = TRUE, sortVars = TRUE, sortCombs = TRUE)
+
+clinical_data %>%
+  filter(is.na(g.cimp_methylation))%>%
+  ggplot(aes(x = os_months,
+             group = os_status,
+             colour = os_status,
+             fill = os_status)) +
+  geom_density(alpha = 0.5)
+
+
+
+
+
 
 
 #generate data we need A long data formating
+
+
+
 
 
 gen_stan_data <- function(data, formula = as.formula(~1)) {
